@@ -1,0 +1,5 @@
+[
+  { "role": "admin", "id": "seed-admin-1", "name": "Seed admin 1" },
+  { "role": "admin", "id": "seed-admin-2", "name": "Seed admin 2" },
+  { "role": "admin", "id": "seed-admin-3", "name": "Seed admin 3" }
+]
