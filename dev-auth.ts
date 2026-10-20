@@ -29,6 +29,11 @@ interface Options {
   /** Backend origin, for listing customers. */
   apiTarget: string;
   tokenHours: number;
+  /**
+   * Serve these endpoints from `vite preview` (production) too. Off by default: they let anyone who
+   * can reach the site sign in as any customer or agent.
+   */
+  inPreview: boolean;
 }
 
 const USERS_FILE = resolve("users.json");
@@ -42,7 +47,9 @@ export function devAuth(opts: Options): Plugin {
   return {
     name: "dev-auth",
     configureServer: (server) => void server.middlewares.use("/dev-auth", handler),
-    configurePreviewServer: (server) => void server.middlewares.use("/dev-auth", handler),
+    configurePreviewServer: (server) => {
+      if (opts.inPreview) server.middlewares.use("/dev-auth", handler);
+    },
   };
 }
 
