@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/v1/:path*", "destination": "https://ondc-api-chat.onrender.com/api/v1/:path*" },
+    { "source": "/dev-auth/:route*", "destination": "/api/dev-auth?route=:route*" }
+  ]
+}

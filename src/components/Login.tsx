@@ -216,7 +216,7 @@ export function Login({ onLogin, notice }: { onLogin: (s: Session) => void; noti
           <div className="more-body">
             {quick && <AddUser key={role} role={role} onSave={save} />}
             <PasteToken role={role} onLogin={onLogin} />
-            {quick && <p className="hint">Sign-ins last {state?.tokenHours} hours. Saved people are kept in users.json.</p>}
+            {quick && <p className="hint">Sign-ins last {state?.tokenHours} hours. Saved people are kept in this browser.</p>}
           </div>
         </details>
       </div>

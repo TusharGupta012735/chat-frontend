@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { adminIssuesApi, customerApi } from "./api/client";
 import type { Chat, IssueStatus } from "./api/types";
-import { devAuth } from "./devAuth";
+import { savedUsers } from "./devAuth";
 import type { Session } from "./session";
 import { categoryLabel, looksLikeName } from "./util";
 
@@ -67,7 +67,7 @@ export function DirectoryProvider({ session, children }: { session: Session; chi
     loading.current = true;
     lastLoad.current = Date.now();
     try {
-      const saved = await devAuth.users().then((r) => r.users).catch(() => []);
+      const saved = savedUsers();
       setAgents(new Map(saved.filter((u) => u.role === "admin").map((u) => [u.id, u.name])));
       const savedCustomers = saved.filter((u) => u.role === "customer");
 

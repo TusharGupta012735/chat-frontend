@@ -1,103 +1,68 @@
 import { createHmac } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { resolve } from "node:path";
-import type { Connect, Plugin } from "vite";
 
 /**
- * Local sign-in for development. Runs inside the Vite dev/preview server (Node), never in the
- * browser: it signs tokens with JWT_PRIVATE_KEY from .env exactly like the backend verifies them
- * (HS256, key = base64-decode(JWT_PRIVATE_KEY), claims `user.id` + `role`).
+ * One-click sign-in. Signs tokens with JWT_PRIVATE_KEY exactly like the backend verifies them
+ * (HS256, key = base64-decode(JWT_PRIVATE_KEY), claims `user.id` + `role`). It runs on the server
+ * only — as a Vercel function in production, mounted into the Vite dev server locally — so the key
+ * never reaches the browser.
  *
- *   GET    /dev-auth/users              saved users + whether signing is configured
- *   POST   /dev-auth/users              { role, id, name } — add or rename a saved user
- *   DELETE /dev-auth/users/:role/:id    forget a saved user
- *   GET    /dev-auth/customers          customers who raised complaints (read from the backend)
- *   POST   /dev-auth/token              { role, id } → { token, exp }
+ *   GET  /dev-auth/status     whether signing is configured
+ *   GET  /dev-auth/customers  customers who raised complaints (read from the backend)
+ *   POST /dev-auth/token      { role, id } → { token, exp }
+ *
+ * Anyone who can open the site can sign in as any customer or agent: it is a demo login.
+ *
+ * Self-contained on purpose (no relative imports), so Vercel can run it as-is.
  */
 
-export type DevRole = "admin" | "customer";
-export interface DevUser {
-  role: DevRole;
-  id: string;
-  name: string;
-}
+export const DEFAULT_API_TARGET = "https://ondc-api-chat.onrender.com";
 
-interface Options {
+type Role = "admin" | "customer";
+
+export interface DevAuthOptions {
   /** Base64 HMAC key, the same JWT_PRIVATE_KEY ondc-api uses. */
   privateKey: string | undefined;
   /** Backend origin, for listing customers. */
   apiTarget: string;
   tokenHours: number;
-  /**
-   * Serve these endpoints from `vite preview` (production) too. Off by default: they let anyone who
-   * can reach the site sign in as any customer or agent.
-   */
-  inPreview: boolean;
 }
 
-const USERS_FILE = resolve("users.json");
-const EXAMPLE_FILE = resolve("users.example.json");
 /** Admin id used only for the read-only customer lookup. Not `flow-admin-*` (backend test cleanup). */
 const LOOKUP_ADMIN = "dev-login";
 
-export function devAuth(opts: Options): Plugin {
-  const key = opts.privateKey ? Buffer.from(opts.privateKey, "base64") : null;
-  const handler = createHandler(key, opts);
+export function optionsFromEnv(env: Record<string, string | undefined>): DevAuthOptions {
   return {
-    name: "dev-auth",
-    configureServer: (server) => void server.middlewares.use("/dev-auth", handler),
-    configurePreviewServer: (server) => {
-      if (opts.inPreview) server.middlewares.use("/dev-auth", handler);
-    },
+    privateKey: env.JWT_PRIVATE_KEY,
+    apiTarget: (env.VITE_API_TARGET || DEFAULT_API_TARGET).replace(/\/+$/, ""),
+    tokenHours: Number(env.DEV_TOKEN_HOURS) || 8,
   };
 }
 
-function createHandler(key: Buffer | null, opts: Options): Connect.NextHandleFunction {
-  const sign = (role: DevRole, id: string) => {
+export function createHandler(opts: DevAuthOptions) {
+  const key = opts.privateKey ? Buffer.from(opts.privateKey, "base64") : null;
+  const sign = (role: Role, id: string) => {
     const iat = Math.floor(Date.now() / 1000);
     const exp = iat + Math.round(opts.tokenHours * 3600);
     const payload = { sub: id, user: { id }, role: role === "admin" ? "ADMIN" : "USER", iat, exp };
     return { token: signHs256(payload, key!), exp };
   };
 
-  return async (req, res) => {
+  return async (req: IncomingMessage, res: ServerResponse) => {
     try {
-      const url = new URL(req.url ?? "/", "http://local");
-      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const route = routeOf(req.url ?? "/");
 
-      if (parts[0] === "users" && parts.length === 1 && req.method === "GET") {
-        return send(res, 200, {
-          signing: !!key,
-          tokenHours: opts.tokenHours,
-          users: readUsers(),
-        });
+      if (route === "status" && req.method === "GET") {
+        return send(res, 200, { signing: !!key, tokenHours: opts.tokenHours });
       }
+      if (!key) return send(res, 503, { message: "One-click sign-in isn't set up: JWT_PRIVATE_KEY is missing on the server." });
 
-      if (parts[0] === "users" && parts.length === 1 && req.method === "POST") {
-        const body = await readJson(req);
-        const user = validUser(body);
-        if (!user) return send(res, 400, { message: "Give a role (admin or customer), an id without spaces, and a name (not the id)." });
-        const users = readUsers().filter((u) => !(u.role === user.role && u.id === user.id));
-        users.push(user);
-        writeUsers(users);
-        return send(res, 200, { users });
-      }
-
-      if (parts[0] === "users" && parts.length === 3 && req.method === "DELETE") {
-        const users = readUsers().filter((u) => !(u.role === parts[1] && u.id === parts[2]));
-        writeUsers(users);
-        return send(res, 200, { users });
-      }
-
-      if (!key) return send(res, 503, { message: "JWT_PRIVATE_KEY is not set in chat-frontend/.env." });
-
-      if (parts[0] === "customers" && req.method === "GET") {
+      if (route === "customers" && req.method === "GET") {
         return send(res, 200, { customers: await fetchCustomers(opts.apiTarget, sign("admin", LOOKUP_ADMIN).token) });
       }
 
-      if (parts[0] === "token" && req.method === "POST") {
-        const body = (await readJson(req)) as Partial<DevUser>;
+      if (route === "token" && req.method === "POST") {
+        const body = (await readJson(req)) as { role?: unknown; id?: unknown };
         if ((body.role !== "admin" && body.role !== "customer") || typeof body.id !== "string" || !body.id.trim()) {
           return send(res, 400, { message: "role and id are required." });
         }
@@ -109,6 +74,18 @@ function createHandler(key: Buffer | null, opts: Options): Connect.NextHandleFun
       send(res, 500, { message: err instanceof Error ? err.message : String(err) });
     }
   };
+}
+
+/** Vercel entry point. vercel.json rewrites /dev-auth/<route> to /api/dev-auth?route=<route>. */
+const vercelHandler = createHandler(optionsFromEnv(process.env));
+export default vercelHandler;
+
+/** "status" from /status, /dev-auth/status or /api/dev-auth?route=status. */
+function routeOf(url: string): string {
+  const u = new URL(url, "http://local");
+  const fromQuery = u.searchParams.get("route");
+  if (fromQuery) return fromQuery.replace(/^\/+|\/+$/g, "");
+  return u.pathname.replace(/^\/(api\/)?(dev-auth\/?)?/, "").replace(/\/+$/, "");
 }
 
 function signHs256(payload: object, key: Buffer): string {
@@ -131,7 +108,7 @@ async function fetchCustomers(apiTarget: string, adminToken: string) {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
     } catch {
-      throw new Error(`Can't reach the backend at ${apiTarget}. Is ondc-api running?`);
+      throw new Error(`Can't reach the backend at ${apiTarget}.`);
     }
     if (!res.ok) throw new Error(`Backend answered ${res.status} when listing complaints.`);
     const json = (await res.json()) as {
@@ -175,28 +152,10 @@ function looksLikeName(v: string | null | undefined, id: string): boolean {
   return !!t && t !== id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t);
 }
 
-function readUsers(): DevUser[] {
-  const file = existsSync(USERS_FILE) ? USERS_FILE : existsSync(EXAMPLE_FILE) ? EXAMPLE_FILE : null;
-  if (!file) return [];
-  const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-  return Array.isArray(parsed) ? parsed.map(validUser).filter((u): u is DevUser => !!u) : [];
-}
-
-function writeUsers(users: DevUser[]) {
-  writeFileSync(USERS_FILE, JSON.stringify(users, null, 2) + "\n");
-}
-
-function validUser(v: unknown): DevUser | null {
-  const u = v as Partial<DevUser> | null;
-  if (!u || (u.role !== "admin" && u.role !== "customer")) return null;
-  const id = typeof u.id === "string" ? u.id.trim() : "";
-  if (!id || id.length > 128 || /\s/.test(id)) return null;
-  const name = typeof u.name === "string" && looksLikeName(u.name, id) ? u.name.trim().slice(0, 80) : "";
-  if (!name) return null;
-  return { role: u.role, id, name };
-}
-
 function readJson(req: IncomingMessage): Promise<unknown> {
+  // Vercel may already have parsed the body; the Vite dev server hasn't.
+  const parsed = (req as IncomingMessage & { body?: unknown }).body;
+  if (parsed !== undefined) return Promise.resolve(typeof parsed === "string" ? JSON.parse(parsed || "{}") : parsed);
   return new Promise((ok, fail) => {
     let data = "";
     req.on("data", (c) => (data += c));

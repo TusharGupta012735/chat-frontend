@@ -19,9 +19,22 @@ admins). After a reconnect the app catches up with `messages?after=`. While the 
 
 ```bash
 npm install
-cp .env.example .env    # then set JWT_PRIVATE_KEY (and VITE_API_TARGET if the backend isn't on localhost:3000)
+cp .env.example .env    # set JWT_PRIVATE_KEY (same value as the backend)
 npm run dev             # http://localhost:5173
 ```
+
+The backend defaults to `https://ondc-api-chat.onrender.com`; set `VITE_API_TARGET` in `.env` to use a
+local one (e.g. `http://localhost:3000`).
+
+## Deploy (Vercel)
+
+Import the GitHub repo into Vercel — the framework, build command and output folder come from
+`vercel.json`. Add one environment variable, **`JWT_PRIVATE_KEY`** (same value as the backend), then
+deploy. Every push to `main` redeploys.
+
+`vercel.json` proxies `/api/v1/*` to the Render backend (same-origin, so the backend's CORS doesn't
+matter) and routes `/dev-auth/*` to the sign-in function in `api/dev-auth.ts`. If the backend URL
+changes, edit it there.
 
 ## Sign-in
 
@@ -34,21 +47,12 @@ Pick **Customer** or **Support agent**, then **Continue as guest** or click a pe
 - The UI never shows raw ids. Customer names come from their complaints (`created_by`) or the saved
   users list; agent names from the saved users list. Agents see each chat headed by the customer's name,
   customers see the complaint type ("Quality issue", "General question").
-
-- The dev server (`dev-auth.ts`, a Vite plugin) signs the token with `JWT_PRIVATE_KEY` from `.env`, the
-  same value as in `ondc-api/.env`, exactly the way the backend verifies it (HS256, `user.id` + `role`).
-  The key has no `VITE_` prefix, so it never reaches the browser. Sign-ins last `DEV_TOKEN_HOURS` (8).
-- **Saved users** live in `users.json` (gitignored; starts from `users.example.json`, which has
-  `seed-admin-1..3`). Add or remove them on the sign-in screen.
+- **Saved people** are kept in each browser (localStorage); the seed agents `seed-admin-1..3` are built in.
 - **Customers with complaints** are read live from `/admin/issues`, so after `npm run seed:issue-chat`
-  the new demo customers show up by name without copying their ids. "Save" pins one to the saved list.
-- Quick sign-in only works under `npm run dev` / `npm run preview`. Anywhere else, use
-  "Paste a token instead" with a token from the backend Postman collection.
+  the new demo customers show up by name without copying their ids.
+- Sign-in tokens are signed on the server by `api/dev-auth.ts` (a Vercel function in production,
+  mounted into the Vite server locally) with `JWT_PRIVATE_KEY`, exactly the way the backend verifies them.
+  The key never reaches the browser. "Paste a token instead" still works under More options.
 
-This is a development convenience: anyone who can reach the dev server can sign in as anyone. Don't
-expose it beyond localhost, and don't deploy `dev-auth.ts` with a real production key.
-
-The dev server proxies `/api` to the backend, so every call is same-origin. This matters because the
-backend's CORS config only allows GET/POST, which would block the admin PATCH calls (close chat, chat
-settings) if the app called the backend directly. In production, serve the built `dist/` behind the same
-origin as the API, or add PATCH to the backend's CORS `methods`.
+This is a demo login: anyone who can open the site can sign in as any customer or support agent,
+and gets a real token for the backend. Don't use it with a backend that holds real customer data.
